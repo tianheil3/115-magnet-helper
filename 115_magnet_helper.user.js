@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         115云盘磁力链接助手-- 天黑了
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.1
 // @description  自动捕捉页面磁力链接并保存至115云盘
 // @author       天黑了
 // @license      MIT
@@ -11,16 +11,16 @@
 // @grant        GM_log
 // @connect      115.com
 // @run-at       document-end
-// @homepage     https://github.com/your-username/115-magnet-helper
-// @supportURL   https://github.com/your-username/115-magnet-helper/issues
-// @updateURL    https://raw.githubusercontent.com/your-username/115-magnet-helper/main/115_magnet_helper.user.js
+// @homepage     https://github.com/tianheil3/115-magnet-helper
+// @supportURL   https://github.com/tianheil3/115-magnet-helper/issues
+// @updateURL    https://raw.githubusercontent.com/tianheil3/115-magnet-helper/main/115_magnet_helper.user.js
 // ==/UserScript==
 
 (function() {
     'use strict';
-    
+
     console.log('115云盘磁力链接助手已加载');
-    
+
     // 调试函数
     function debug(msg, ...args) {
         console.log(`[115助手] ${msg}`, ...args);
@@ -32,7 +32,7 @@
     // 修改115图标的SVG，使用文字"115"
     const icon115 = `
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16">
-        <text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" 
+        <text x="50%" y="50%" text-anchor="middle" dominant-baseline="central"
             fill="white" font-family="Arial" font-weight="bold" font-size="10">115</text>
     </svg>`;
 
@@ -147,7 +147,7 @@
                         try {
                             // 检查响应文本
                             debug('API响应:', response.responseText);
-                            
+
                             const result = JSON.parse(response.responseText);
                             if (result.state) {
                                 GM_notification({
@@ -157,7 +157,42 @@
                                 });
                                 resolve(true);
                             } else {
-                                throw new Error(result.error || '添加任务失败');
+                                // 处理不同类型的错误
+                                let errorMessage = '添加任务失败';
+
+                                // 处理常见错误类型
+                                if (result.errno === 10008) {
+                                    errorMessage = '任务已存在';
+                                } else if (result.error_msg) {
+                                    errorMessage = result.error_msg;
+                                }
+
+                                // 添加更多错误类型的处理
+                                const errorTypes = {
+                                    911: '用户未登录',
+                                    10009: '任务超出限制',
+                                    10004: '空间不足',
+                                    10002: '解析失败',
+                                    // 可以继续添加其他错误类型
+                                };
+
+                                if (result.errno && errorTypes[result.errno]) {
+                                    errorMessage = errorTypes[result.errno];
+                                }
+
+                                // 显示详细的错误通知
+                                GM_notification({
+                                    text: errorMessage,
+                                    title: '115云盘助手',
+                                    timeout: 5000
+                                });
+
+                                // 如果是警告类型的错误（如任务已存在），返回 true
+                                if (result.errtype === 'war') {
+                                    resolve(true);
+                                } else {
+                                    resolve(false);
+                                }
                             }
                         } catch (error) {
                             console.error('解析响应失败:', error, response.responseText);
@@ -226,21 +261,21 @@
             button.style.transform = 'scale(1.1)';
             button.style.opacity = '1';
         });
-        
+
         button.addEventListener('mouseleave', () => {
             button.style.transform = 'scale(1)';
             button.style.opacity = '0.8';
         });
-        
+
         // 点击处理
         button.addEventListener('click', async (e) => {
             e.stopPropagation();
             e.preventDefault();
             debug('点击按钮，准备保存:', magnetLink);
-            
+
             button.style.backgroundColor = '#1E5AC8';
             const success = await saveTo115(magnetLink);
-            
+
             button.style.backgroundColor = success ? '#2777F8' : '#f44336';
             if (!success) {
                 setTimeout(() => {
@@ -255,15 +290,15 @@
     // 查找并处理磁力链接
     function findAndProcessMagnetLinks() {
         debug('开始查找磁力链接');
-        
+
         // 1. 首先查找页面上所有元素的文本内容
         const allElements = document.getElementsByTagName('*');
         const processedLinks = new Set();
-        
+
         for (const element of allElements) {
             // 跳过脚本和样式标签
-            if (element.tagName === 'SCRIPT' || 
-                element.tagName === 'STYLE' || 
+            if (element.tagName === 'SCRIPT' ||
+                element.tagName === 'STYLE' ||
                 element.tagName === 'NOSCRIPT') {
                 continue;
             }
@@ -322,4 +357,4 @@
     } else {
         init();
     }
-})(); 
+})();
