@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         115云盘磁力链接助手-- 天黑了
 // @namespace    http://tampermonkey.net/
-// @version      1.2
+// @version      1.3
 // @description  自动捕捉页面磁力链接并保存至115云盘
 // @author       天黑了
 // @license      MIT
@@ -14,6 +14,7 @@
 // @homepage     https://github.com/tianheil3/115-magnet-helper
 // @supportURL   https://github.com/tianheil3/115-magnet-helper/issues
 // @updateURL    https://raw.githubusercontent.com/tianheil3/115-magnet-helper/main/115_magnet_helper.user.js
+// @grant        window.Notification
 // ==/UserScript==
 
 (function() {
@@ -60,6 +61,29 @@
 
     // 存储已创建的按钮
     const createdButtons = new Set();
+
+    // 创建一个通用的通知函数
+    function showNotification(title, text, isWarning = false) {
+        debug('准备显示通知:', { title, text, isWarning });
+        
+        // 直接使用 alert 显示通知
+        setTimeout(() => {
+            window.alert(`${title}\n${text}`);
+        }, 100);
+
+        // 同时尝试使用 GM_notification
+        try {
+            GM_notification({
+                title: title,
+                text: text,
+                timeout: isWarning ? 3000 : 5000,
+                onclick: () => debug('通知被点击了')
+            });
+            debug('GM_notification 已调用');
+        } catch (e) {
+            debug('GM_notification 调用失败:', e);
+        }
+    }
 
     // 保存到115云盘
     async function saveTo115(magnetLink) {
@@ -146,53 +170,63 @@
                     withCredentials: true,
                     onload: function(response) {
                         try {
-                            // 检查响应文本
+                            // 增加详细的调试信息
                             debug('API响应:', response.responseText);
+                            debug('响应状态:', response.status);
                             
                             const result = JSON.parse(response.responseText);
+                            debug('解析后的结果:', {
+                                state: result.state,
+                                errtype: result.errtype,
+                                errcode: result.errcode,
+                                errno: result.errno,
+                                error_msg: result.error_msg
+                            });
+                            
                             if (result.state) {
-                                GM_notification({
-                                    text: '磁力链接已成功添加到离线下载队列',
-                                    title: '115云盘助手',
-                                    timeout: 3000
-                                });
+                                showNotification(
+                                    '115云盘助手',
+                                    '磁力链接已成功添加到离线下载队列',
+                                    true
+                                );
                                 resolve(true);
                             } else {
-                                // 处理不同类型的错误
                                 let errorMessage = '添加任务失败';
                                 
-                                // 错误代码可能在 errno 或 errcode 中
-                                const errorCode = result.errcode || result.errno;
-                                
-                                // 处理常见错误类型
-                                const errorTypes = {
-                                    911: '用户未登录',
-                                    10008: '任务已存在',
-                                    10009: '任务超出限制',
-                                    10004: '空间不足',
-                                    10002: '解析失败',
-                                    // 可以继续添加其他错误类型
-                                };
-
-                                if (errorCode && errorTypes[errorCode]) {
-                                    errorMessage = errorTypes[errorCode];
-                                } else if (result.error_msg) {
+                                // 优先使用 error_msg
+                                if (result.error_msg) {
                                     errorMessage = result.error_msg;
-                                }
-
-                                // 显示详细的错误通知
-                                GM_notification({
-                                    text: errorMessage,
-                                    title: '115云盘助手',
-                                    timeout: 5000
-                                });
-
-                                // 如果是警告类型的错误（如任务已存在），返回 true
-                                if (result.errtype === 'war') {
-                                    resolve(true);
+                                    debug('使用 error_msg 作为错误信息:', errorMessage);
                                 } else {
-                                    resolve(false);
+                                    const errorCode = result.errcode || result.errno;
+                                    debug('使用错误代码:', errorCode);
+                                    
+                                    const errorTypes = {
+                                        911: '用户未登录',
+                                        10008: '任务已存在',
+                                        10009: '任务超出限制',
+                                        10004: '空间不足',
+                                        10002: '解析失败',
+                                    };
+
+                                    if (errorCode && errorTypes[errorCode]) {
+                                        errorMessage = errorTypes[errorCode];
+                                        debug('从错误类型映射获取错误信息:', errorMessage);
+                                    }
                                 }
+
+                                // 检查是否为警告类型
+                                const isWarning = result.errtype === 'war' || result.errcode === 10008;
+                                debug('是否为警告类型:', isWarning, '(errtype:', result.errtype, 'errcode:', result.errcode, ')');
+
+                                // 显示通知
+                                showNotification(
+                                    isWarning ? '115云盘助手 - 提示' : '115云盘助手 - 错误',
+                                    errorMessage,
+                                    isWarning
+                                );
+
+                                resolve(isWarning);
                             }
                         } catch (error) {
                             console.error('解析响应失败:', error, response.responseText);
