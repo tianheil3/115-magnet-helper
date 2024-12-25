@@ -161,14 +161,10 @@
                                 // 处理不同类型的错误
                                 let errorMessage = '添加任务失败';
                                 
+                                // 错误代码可能在 errno 或 errcode 中
+                                const errorCode = result.errcode || result.errno;
+                                
                                 // 处理常见错误类型
-                                if (result.errno === 10008) {
-                                    errorMessage = '任务已存在';
-                                } else if (result.error_msg) {
-                                    errorMessage = result.error_msg;
-                                }
-
-                                // 添加更多错误类型的处理
                                 const errorTypes = {
                                     911: '用户未登录',
                                     10008: '任务已存在',
@@ -178,8 +174,10 @@
                                     // 可以继续添加其他错误类型
                                 };
 
-                                if (result.errno && errorTypes[result.errno]) {
-                                    errorMessage = errorTypes[result.errno];
+                                if (errorCode && errorTypes[errorCode]) {
+                                    errorMessage = errorTypes[errorCode];
+                                } else if (result.error_msg) {
+                                    errorMessage = result.error_msg;
                                 }
 
                                 // 显示详细的错误通知
