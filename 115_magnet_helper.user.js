@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         115云盘磁力链接助手-- 天黑了
 // @namespace    http://tampermonkey.net/
-// @version      1.1
+// @version      1.2
 // @description  自动捕捉页面磁力链接并保存至115云盘
 // @author       天黑了
 // @license      MIT
@@ -18,9 +18,9 @@
 
 (function() {
     'use strict';
-
+    
     console.log('115云盘磁力链接助手已加载');
-
+    
     // 调试函数
     function debug(msg, ...args) {
         console.log(`[115助手] ${msg}`, ...args);
@@ -32,11 +32,11 @@
     // 修改115图标的SVG，使用文字"115"
     const icon115 = `
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16">
-        <text x="50%" y="50%" text-anchor="middle" dominant-baseline="central"
+        <text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" 
             fill="white" font-family="Arial" font-weight="bold" font-size="10">115</text>
     </svg>`;
 
-    // 修改按钮样式，稍微调整大小以适应文字
+    // 修改按钮样式，移除定位相关的属性
     const buttonStyle = `
         display: inline-flex;
         align-items: center;
@@ -55,6 +55,7 @@
         transition: all 0.3s ease;
         opacity: 0.9;
         user-select: none;
+        vertical-align: middle;
     `;
 
     // 存储已创建的按钮
@@ -147,7 +148,7 @@
                         try {
                             // 检查响应文本
                             debug('API响应:', response.responseText);
-
+                            
                             const result = JSON.parse(response.responseText);
                             if (result.state) {
                                 GM_notification({
@@ -159,7 +160,7 @@
                             } else {
                                 // 处理不同类型的错误
                                 let errorMessage = '添加任务失败';
-
+                                
                                 // 处理常见错误类型
                                 if (result.errno === 10008) {
                                     errorMessage = '任务已存在';
@@ -170,6 +171,7 @@
                                 // 添加更多错误类型的处理
                                 const errorTypes = {
                                     911: '用户未登录',
+                                    10008: '任务已存在',
                                     10009: '任务超出限制',
                                     10004: '空间不足',
                                     10002: '解析失败',
@@ -231,58 +233,80 @@
         if (createdButtons.has(magnetLink)) return;
         debug('创建按钮:', magnetLink);
 
-        // 创建按钮容器
-        const buttonContainer = document.createElement('div');
-        buttonContainer.style.cssText = `
-            position: relative;
-            display: inline-block;
-            margin-left: 5px;
-            vertical-align: middle;
+        // 创建一个包装容器
+        const wrapper = document.createElement('span');
+        wrapper.style.cssText = `
+            display: inline-flex;
+            align-items: center;
+            white-space: nowrap;
+            margin: 0 2px;
         `;
 
-        // 创建按钮
-        const button = document.createElement('span');
-        button.innerHTML = '115';  // 直接使用文字
-        button.style.cssText = buttonStyle;
-        button.title = '点击保存到115云盘';
-        buttonContainer.appendChild(button);
+        // 创建按钮 - 改名为 buttonElement
+        const buttonElement = document.createElement('span');
+        buttonElement.innerHTML = '115';
+        buttonElement.style.cssText = buttonStyle;
+        buttonElement.title = '点击保存到115云盘';
 
-        // 插入按钮
-        if (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA') {
-            // 对于输入框，在其后面插入按钮
-            element.parentNode.insertBefore(buttonContainer, element.nextSibling);
+        if (element.nodeType === Node.TEXT_NODE) {
+            // 处理文本节点
+            const text = element.textContent;
+            const index = text.indexOf(magnetLink);
+            if (index !== -1) {
+                const beforeText = document.createTextNode(text.substring(0, index));
+                const afterText = document.createTextNode(text.substring(index + magnetLink.length));
+                const magnetSpan = document.createElement('span');
+                magnetSpan.textContent = magnetLink;
+                
+                const parent = element.parentNode;
+                parent.insertBefore(beforeText, element);
+                parent.insertBefore(wrapper, element);
+                wrapper.appendChild(magnetSpan);
+                wrapper.appendChild(buttonElement);
+                parent.insertBefore(afterText, element);
+                parent.removeChild(element);
+            }
         } else {
-            // 对于其他元素，在其内部末尾插入按钮
-            element.appendChild(buttonContainer);
+            // 处理元素节点
+            if (element.tagName === 'A' || element.tagName === 'INPUT') {
+                element.parentNode.insertBefore(wrapper, element.nextSibling);
+                wrapper.appendChild(buttonElement);
+            } else {
+                element.appendChild(wrapper);
+                wrapper.appendChild(buttonElement);
+            }
         }
 
-        // 添加交互效果
-        button.addEventListener('mouseenter', () => {
-            button.style.transform = 'scale(1.1)';
-            button.style.opacity = '1';
-        });
-
-        button.addEventListener('mouseleave', () => {
-            button.style.transform = 'scale(1)';
-            button.style.opacity = '0.8';
-        });
-
-        // 点击处理
-        button.addEventListener('click', async (e) => {
-            e.stopPropagation();
-            e.preventDefault();
-            debug('点击按钮，准备保存:', magnetLink);
-
-            button.style.backgroundColor = '#1E5AC8';
-            const success = await saveTo115(magnetLink);
-
-            button.style.backgroundColor = success ? '#2777F8' : '#f44336';
-            if (!success) {
-                setTimeout(() => {
-                    button.style.backgroundColor = '#2777F8';
-                }, 2000);
-            }
-        });
+        // 添加按钮事件处理 - 直接使用 buttonElement
+        if (buttonElement) {
+            // 添加交互效果
+            buttonElement.addEventListener('mouseenter', () => {
+                buttonElement.style.transform = 'scale(1.1)';
+                buttonElement.style.opacity = '1';
+            });
+            
+            buttonElement.addEventListener('mouseleave', () => {
+                buttonElement.style.transform = 'scale(1)';
+                buttonElement.style.opacity = '0.9';
+            });
+            
+            // 点击处理
+            buttonElement.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                debug('点击按钮，准备保存:', magnetLink);
+                
+                buttonElement.style.backgroundColor = '#1E5AC8';
+                const success = await saveTo115(magnetLink);
+                
+                buttonElement.style.backgroundColor = success ? '#2777F8' : '#f44336';
+                if (!success) {
+                    setTimeout(() => {
+                        buttonElement.style.backgroundColor = '#2777F8';
+                    }, 2000);
+                }
+            });
+        }
 
         createdButtons.add(magnetLink);
     }
@@ -290,20 +314,64 @@
     // 查找并处理磁力链接
     function findAndProcessMagnetLinks() {
         debug('开始查找磁力链接');
-
-        // 1. 首先查找页面上所有元素的文本内容
-        const allElements = document.getElementsByTagName('*');
+        
+        // 使用 TreeWalker 遍历所有文本节点
         const processedLinks = new Set();
-
-        for (const element of allElements) {
-            // 跳过脚本和样式标签
-            if (element.tagName === 'SCRIPT' ||
-                element.tagName === 'STYLE' ||
-                element.tagName === 'NOSCRIPT') {
-                continue;
+        const walker = document.createTreeWalker(
+            document.body,
+            NodeFilter.SHOW_TEXT,
+            {
+                acceptNode: function(node) {
+                    // 过滤掉不可见元素和脚本标签
+                    const parent = node.parentElement;
+                    if (!parent || 
+                        parent.tagName === 'SCRIPT' || 
+                        parent.tagName === 'STYLE' || 
+                        parent.tagName === 'NOSCRIPT' ||
+                        getComputedStyle(parent).display === 'none' ||
+                        getComputedStyle(parent).visibility === 'hidden') {
+                        return NodeFilter.FILTER_REJECT;
+                    }
+                    // 只接受包含磁力链接的文本节点
+                    return node.textContent.includes('magnet:?') ? 
+                        NodeFilter.FILTER_ACCEPT : 
+                        NodeFilter.FILTER_SKIP;
+                }
             }
+        );
 
-            // 检查元素的各种属性
+        const textNodes = [];
+        while (walker.nextNode()) {
+            textNodes.push(walker.currentNode);
+        }
+
+        // 处理找到的文本节点
+        textNodes.forEach(node => {
+            const matches = node.textContent.match(magnetRegex);
+            if (matches) {
+                matches.forEach(magnetLink => {
+                    if (!processedLinks.has(magnetLink)) {
+                        // 找到实际包含磁力链接的最小父元素
+                        let targetElement = node;
+                        let parent = node.parentElement;
+                        while (parent && parent !== document.body) {
+                            if (parent.textContent.trim() === node.textContent.trim()) {
+                                targetElement = parent;
+                                parent = parent.parentElement;
+                            } else {
+                                break;
+                            }
+                        }
+                        createMagnetButton(magnetLink, targetElement);
+                        processedLinks.add(magnetLink);
+                    }
+                });
+            }
+        });
+
+        // 检查特殊属性（如链接和输入框）
+        const elements = document.querySelectorAll('a[href], input[value], [data-url], [title], [data-clipboard-text]');
+        elements.forEach(element => {
             const attributes = ['href', 'data-url', 'value', 'title', 'data-clipboard-text'];
             for (const attr of attributes) {
                 const value = element.getAttribute(attr);
@@ -319,20 +387,7 @@
                     }
                 }
             }
-
-            // 检查文本内容
-            if (element.textContent) {
-                const matches = element.textContent.match(magnetRegex);
-                if (matches) {
-                    matches.forEach(magnetLink => {
-                        if (!processedLinks.has(magnetLink)) {
-                            createMagnetButton(magnetLink, element);
-                            processedLinks.add(magnetLink);
-                        }
-                    });
-                }
-            }
-        }
+        });
     }
 
     // 初始化
@@ -357,4 +412,4 @@
     } else {
         init();
     }
-})();
+})(); 
