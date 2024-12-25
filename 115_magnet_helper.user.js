@@ -6,11 +6,11 @@
 // @author       天黑了
 // @license      MIT
 // @match        *://*/*
+// @connect      115.com
 // @grant        GM_xmlhttpRequest
 // @grant        GM_notification
 // @grant        GM_log
 // @grant        window.Notification
-// @connect      115.com
 // @run-at       document-end
 // @homepage     https://github.com/tianheil3/115-magnet-helper
 // @supportURL   https://github.com/tianheil3/115-magnet-helper/issues
