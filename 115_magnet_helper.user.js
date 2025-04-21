@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         115云盘磁力链接助手-- 天黑了
 // @namespace    http://tampermonkey.net/
-// @version      1.3
-// @description  自动捕捉页面磁力链接并保存至115云盘
+// @version      1.5
+// @description  自动捕捉页面磁力链接并保存至115云盘, 可选择已有文件夹保存
 // @author       天黑了
 // @license      MIT
 // @match        *://*/*
@@ -20,7 +20,7 @@
 (function() {
     'use strict';
     
-    console.log('115云盘磁力链接助手已加载');
+    console.log('115云盘磁力链接助手已加载 (v1.5)');
     
     // 调试函数
     function debug(msg, ...args) {
@@ -85,8 +85,210 @@
         }
     }
 
+    // 解析磁力链接中的 dn 参数
+    function getDisplayNameFromMagnet(magnetLink) {
+        try {
+            const urlParams = new URLSearchParams(magnetLink.substring(magnetLink.indexOf('?') + 1));
+            const dn = urlParams.get('dn');
+            if (dn) {
+                // 解码并清理非法字符
+                let decodedDn = decodeURIComponent(dn.replace(/\+/g, ' '));
+                // 移除 Windows 文件名非法字符: \ / : * ? " < > |
+                decodedDn = decodedDn.replace(/[\\/:*?"<>|]/g, '_');
+                // 移除控制字符
+                decodedDn = decodedDn.replace(/[\x00-\x1F\x7F]/g, '');
+                // 移除首尾空格
+                decodedDn = decodedDn.trim();
+                // 避免文件名过长（115 可能有限制，暂定 200）
+                return decodedDn.substring(0, 200);
+            }
+        } catch (e) {
+            debug('解析 dn 参数失败:', e);
+        }
+        return null; // 如果没有 dn 参数或解析失败，返回 null
+    }
+
+    // 获取 115 文件夹列表 (目前只获取根目录下的)
+    async function get115Folders() {
+        return new Promise((resolve) => {
+            debug('开始获取根目录文件夹列表');
+            // 尝试简化 URL 参数，并减少 limit
+            const apiUrl = 'https://aps.115.com/natsort/files.php?aid=1&cid=0&offset=0&limit=300&show_dir=1&natsort=1&format=json';
+            GM_xmlhttpRequest({
+                method: 'GET',
+                // 使用 115 Web API 获取文件列表，cid=0 表示根目录
+                // 参数可能随版本变化，limit 设置大一些以获取更多文件夹
+                url: apiUrl, 
+                headers: {
+                    'Accept': 'application/json, text/javascript, */*; q=0.01',
+                    'Referer': 'https://115.com/',
+                    'User-Agent': window.navigator.userAgent
+                },
+                withCredentials: true,
+                onload: function(response) {
+                    try {
+                        debug('获取文件夹列表 API 响应:', response.responseText.substring(0, 500) + '...'); // 避免日志过长
+                        const result = JSON.parse(response.responseText);
+                        if (result.state) {
+                            // 115 API 返回的数据结构可能变化，这里尝试兼容常见的文件夹判断方式
+                            const folders = result.data
+                                // 主要判断方式：查找具有 cid (文件夹ID) 且 n (名称) 存在的项
+                                // 可能需要结合其他字段，如 ico == 'folder'，或检查是否存在 pid (父ID)
+                                // 更可靠的判断：有 cid 和 n，但没有 fid (文件ID) 和 sha1 (文件哈希)
+                                .filter(item => item.cid && item.n && typeof item.fid === 'undefined' && typeof item.sha1 === 'undefined')
+                                .map(item => ({ id: item.cid, name: item.n }));
+                            debug('成功获取文件夹列表:', folders.length, '个');
+                            resolve(folders); // 返回 {id, name} 数组
+                        } else {
+                            // 改进错误日志，包含 errNo
+                            const errorDetail = `errNo: ${result.errNo}, error: "${result.error || ''}", msg: "${result.msg || 'N/A'}"`;
+                            console.error(`获取文件夹列表失败: API返回 state:false, ${errorDetail}`);
+                            resolve([]); // 返回空数组
+                        }
+                    } catch (error) {
+                        console.error('解析文件夹列表响应失败:', error, response.responseText);
+                        resolve([]); // 解析失败返回空数组
+                    }
+                },
+                onerror: function(error) {
+                    console.error('获取文件夹列表请求失败:', error);
+                    resolve([]); // 请求失败返回空数组
+                }
+            });
+        });
+    }
+
+    // 显示文件夹选择模态框
+    async function showFolderSelector(magnetLink, buttonElement) {
+        // --- 创建模态框基础结构 ---
+        const modalOverlay = document.createElement('div');
+        modalOverlay.id = 'magnet-helper-modal-overlay'; // 添加 ID 以便查找和移除
+        modalOverlay.style.cssText = `
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background-color: rgba(0, 0, 0, 0.6); z-index: 9999;
+            display: flex; justify-content: center; align-items: center;
+        `;
+
+        const modalContent = document.createElement('div');
+        modalContent.style.cssText = `
+            background-color: white; padding: 25px; border-radius: 8px;
+            min-width: 300px; max-width: 80%; max-height: 80%;
+            overflow-y: auto; box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+            color: #333; font-family: sans-serif; font-size: 14px;
+        `;
+
+        const title = document.createElement('h3');
+        title.textContent = '选择保存位置';
+        title.style.cssText = 'margin-top: 0; margin-bottom: 15px; color: #1E5AC8; border-bottom: 1px solid #eee; padding-bottom: 10px;';
+        modalContent.appendChild(title);
+
+        const loadingText = document.createElement('p');
+        loadingText.textContent = '正在加载文件夹列表...';
+        modalContent.appendChild(loadingText);
+
+        modalOverlay.appendChild(modalContent);
+        document.body.appendChild(modalOverlay);
+
+        // --- 获取并显示文件夹 ---
+        try {
+            const folders = await get115Folders();
+            if (modalContent.contains(loadingText)) {
+                 modalContent.removeChild(loadingText); // 移除加载提示
+            }
+
+            const list = document.createElement('ul');
+            list.style.cssText = 'list-style: none; padding: 0; margin: 0 0 15px 0; max-height: 300px; overflow-y: auto;';
+
+            // 添加 "根目录" 选项
+            const rootOption = document.createElement('li');
+            rootOption.textContent = '根目录 (默认)';
+            rootOption.style.cssText = 'padding: 8px 12px; cursor: pointer; border-radius: 4px; margin-bottom: 5px; background-color: #f0f0f0;';
+            rootOption.addEventListener('mouseover', () => { rootOption.style.backgroundColor = '#e0e0e0'; });
+            rootOption.addEventListener('mouseout', () => { rootOption.style.backgroundColor = '#f0f0f0'; });
+            rootOption.addEventListener('click', () => {
+                selectFolder(0); // 根目录 ID 为 0
+            });
+            list.appendChild(rootOption);
+
+            // 添加获取到的文件夹
+            folders.forEach(folder => {
+                const item = document.createElement('li');
+                item.textContent = folder.name;
+                item.title = folder.name; // 防止名称过长显示不全
+                item.style.cssText = 'padding: 8px 12px; cursor: pointer; border-radius: 4px; margin-bottom: 5px; background-color: #f9f9f9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;';
+                 item.addEventListener('mouseover', () => { item.style.backgroundColor = '#eee'; });
+                 item.addEventListener('mouseout', () => { item.style.backgroundColor = '#f9f9f9'; });
+                item.addEventListener('click', () => {
+                    selectFolder(folder.id);
+                });
+                list.appendChild(item);
+            });
+            modalContent.appendChild(list);
+
+        } catch (error) { // 网络或其他错误导致 get115Folders reject
+            if (modalContent.contains(loadingText)) {
+                modalContent.removeChild(loadingText);
+            }
+            const errorText = document.createElement('p');
+            errorText.textContent = '加载文件夹列表失败！将尝试保存到根目录。' + (error.message ? `(${error.message})` : '');
+            errorText.style.color = 'red';
+            modalContent.appendChild(errorText);
+            // 自动选择根目录并关闭
+            setTimeout(() => selectFolder(0), 2500);
+        }
+
+        // --- 添加取消按钮 ---
+        const cancelButton = document.createElement('button');
+        cancelButton.textContent = '取消';
+        cancelButton.style.cssText = `
+            padding: 8px 15px; background-color: #ccc; color: #333;
+            border: none; border-radius: 4px; cursor: pointer; float: right;
+        `;
+        cancelButton.addEventListener('click', closeAndCancel);
+        modalContent.appendChild(cancelButton);
+
+        // --- 点击遮罩层关闭 ---
+        modalOverlay.addEventListener('click', (e) => {
+            if (e.target === modalOverlay) {
+                closeAndCancel();
+            }
+        });
+
+        // --- 关闭模态框的通用函数 ---
+        function closeModal() {
+            setTimeout(() => { // Add delay
+                const existingModal = document.getElementById('magnet-helper-modal-overlay');
+                if (existingModal && existingModal.parentNode) {
+                    existingModal.parentNode.removeChild(existingModal);
+                }
+            }, 100); // Delay of 100ms
+        }
+
+        // --- 选择文件夹并关闭模态框的函数 ---
+        async function selectFolder(folderId) {
+            closeModal();
+            debug(`用户选择文件夹 ID: ${folderId}`);
+            buttonElement.textContent = '...'; // 再次确认按钮是加载状态
+            buttonElement.style.backgroundColor = '#ff9800';
+            // 调用保存函数，并传递按钮元素用于状态恢复
+            const success = await saveTo115(magnetLink, folderId, buttonElement);
+            // 状态恢复在 saveTo115 内部处理
+        }
+
+        // --- 关闭模态框并不执行操作 ---
+        function closeAndCancel() {
+            closeModal();
+            debug('用户取消选择');
+            // 恢复按钮状态
+            buttonElement.textContent = '115';
+            buttonElement.style.backgroundColor = '#2777F8';
+        }
+    }
+
     // 保存到115云盘
-    async function saveTo115(magnetLink) {
+    async function saveTo115(magnetLink, targetFolderId = 0, buttonElement = null) {
+        let success = false;
+        let isWarning = false;
         try {
             // 检查登录状态
             const checkLogin = () => {
@@ -152,10 +354,10 @@
             // 获取离线空间信息
             const spaceInfo = await getOfflineSpace();
             if (!spaceInfo || !spaceInfo.state) {
-                throw new Error('获取离线空间信息失败');
+                debug('获取离线空间信息失败，但仍尝试添加任务');
             }
 
-            // 添加离线任务
+            // 添加离线任务，并指定目标文件夹ID (wp_path_id)
             return new Promise((resolve) => {
                 GM_xmlhttpRequest({
                     method: 'POST',
@@ -166,7 +368,8 @@
                         'Origin': 'https://115.com',
                         'User-Agent': window.navigator.userAgent
                     },
-                    data: `url=${encodeURIComponent(magnetLink)}`,
+                    // 在 data 中添加 wp_path_id 参数
+                    data: `url=${encodeURIComponent(magnetLink)}&wp_path_id=${targetFolderId}`,
                     withCredentials: true,
                     onload: function(response) {
                         try {
@@ -183,13 +386,16 @@
                                 error_msg: result.error_msg
                             });
                             
-                            if (result.state) {
+                            success = result.state;
+                            isWarning = result.errtype === 'war' || result.errcode === 10008; // 任务已存在算警告
+
+                            if (success) {
                                 showNotification(
                                     '115云盘助手',
                                     '磁力链接已成功添加到离线下载队列',
                                     true
                                 );
-                                resolve(true);
+                                resolve(isWarning); // 失败时，如果是警告也算某种程度的"成功"
                             } else {
                                 let errorMessage = '添加任务失败';
                                 
@@ -216,7 +422,6 @@
                                 }
 
                                 // 检查是否为警告类型
-                                const isWarning = result.errtype === 'war' || result.errcode === 10008;
                                 debug('是否为警告类型:', isWarning, '(errtype:', result.errtype, 'errcode:', result.errcode, ')');
 
                                 // 显示通知
@@ -229,6 +434,7 @@
                                 resolve(isWarning);
                             }
                         } catch (error) {
+                            success = false;
                             console.error('解析响应失败:', error, response.responseText);
                             GM_notification({
                                 text: '添加任务失败: ' + (error.message || '未知错误'),
@@ -239,6 +445,7 @@
                         }
                     },
                     onerror: function(error) {
+                        success = false;
                         console.error('请求失败:', error);
                         GM_notification({
                             text: '网络请求失败',
@@ -246,16 +453,44 @@
                             timeout: 3000
                         });
                         resolve(false);
+                    },
+                    // GM_xmlhttpRequest 的 finally 不可靠，在 onload 和 onerror 中处理
+                    onloadend: function() {
+                        // 恢复按钮状态
+                        if (buttonElement) {
+                           debug('恢复按钮状态, success:', success, 'isWarning:', isWarning);
+                           buttonElement.textContent = '115';
+                           // 成功或警告(任务已存在) 都用蓝色，否则用红色
+                           buttonElement.style.backgroundColor = (success || isWarning) ? '#2777F8' : '#f44336';
+                           if (!(success || isWarning)) { // 如果是彻底失败，一段时间后恢复蓝色
+                               setTimeout(() => {
+                                   if (buttonElement.style.backgroundColor === 'rgb(244, 67, 54)') { // 检查是否仍是红色
+                                      buttonElement.style.backgroundColor = '#2777F8';
+                                   }
+                               }, 2000);
+                           }
+                        }
                     }
                 });
             });
         } catch (error) {
-            console.error('保存到115云盘失败:', error);
+            success = false;
+            console.error('保存到115云盘外层失败:', error);
             GM_notification({
                 text: '保存失败：' + error.message,
                 title: '115云盘助手',
                 timeout: 3000
             });
+             // 恢复按钮状态 (如果需要)
+             if (buttonElement) {
+                 buttonElement.textContent = '115';
+                 buttonElement.style.backgroundColor = '#f44336'; // 红色表示错误
+                 setTimeout(() => {
+                     if (buttonElement.style.backgroundColor === 'rgb(244, 67, 54)') {
+                          buttonElement.style.backgroundColor = '#2777F8';
+                     }
+                 }, 2000);
+             }
             return false;
         }
     }
@@ -326,16 +561,27 @@
             buttonElement.addEventListener('click', async (e) => {
                 e.stopPropagation();
                 e.preventDefault();
-                debug('点击按钮，准备保存:', magnetLink);
-                
-                buttonElement.style.backgroundColor = '#1E5AC8';
-                const success = await saveTo115(magnetLink);
-                
-                buttonElement.style.backgroundColor = success ? '#2777F8' : '#f44336';
-                if (!success) {
+                debug('点击按钮，准备显示文件夹选择器:', magnetLink);
+
+                // 改变按钮外观，表示正在处理
+                buttonElement.textContent = '...';
+                buttonElement.style.backgroundColor = '#ff9800'; // 橙色表示等待
+                buttonElement.disabled = true; // 暂时禁用按钮防止重复点击
+
+                // 显示文件夹选择器，传递按钮元素以便后续恢复状态
+                try {
+                    await showFolderSelector(magnetLink, buttonElement);
+                    // 选择器内部会调用 saveTo115 并处理后续状态
+                } catch (error) {
+                    console.error('显示文件夹选择器时出错:', error);
+                    // 如果选择器本身出错，恢复按钮
+                    buttonElement.textContent = '115';
+                    buttonElement.style.backgroundColor = '#f44336'; // 显示错误
                     setTimeout(() => {
-                        buttonElement.style.backgroundColor = '#2777F8';
-                    }, 2000);
+                          buttonElement.style.backgroundColor = '#2777F8';
+                     }, 2000);
+                } finally {
+                    buttonElement.disabled = false; // 无论如何最终都恢复按钮可用性
                 }
             });
         }
